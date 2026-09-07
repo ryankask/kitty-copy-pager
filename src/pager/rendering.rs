@@ -1,6 +1,6 @@
 use super::Pager;
 
-use crate::pager::search::SearchState;
+use crate::pager::search::{SearchDirection, SearchState};
 use crate::selection::*;
 use crate::utils::get_utf_index;
 use crossterm::{
@@ -40,7 +40,11 @@ impl Pager {
         };
 
         let match_counter = if search.error.is_none() && !search.results.is_empty() {
-            format!("[{}/{}] ", search.current_result_index + 1, search.results.len())
+            format!(
+                "[{}/{}] ",
+                search.current_result_index + 1,
+                search.results.len()
+            )
         } else {
             String::new()
         };
@@ -49,8 +53,8 @@ impl Pager {
         let query_width = search.query.width();
         let threshold = self.term_width.saturating_sub(extra_width * 2);
         let is_long = query_width > threshold;
-        let num_lines = (query_width as f64 / self.term_width.saturating_sub(1) as f64).ceil()
-            as usize;
+        let num_lines =
+            (query_width as f64 / self.term_width.saturating_sub(1) as f64).ceil() as usize;
 
         if is_long && num_lines > self.term_height / 2 {
             search.error = Some("Search query too long to display".to_string());
@@ -94,8 +98,12 @@ impl Pager {
             search.query.as_str()
         };
 
+        let search_prefix = match search.direction {
+            SearchDirection::Forward => '/',
+            SearchDirection::Backward => '?',
+        };
         out.queue(MoveTo(0, status_line_y))?;
-        out.queue(Print(format!("/{}", prompt)))?;
+        out.queue(Print(format!("{search_prefix}{prompt}")))?;
         if is_long && search.state != SearchState::Typing {
             out.queue(Print(PROMPT_ELIPSIS))?;
         }
@@ -151,7 +159,7 @@ impl Pager {
         bg_color: &Color,
         out: &mut Stdout,
     ) -> io::Result<()> {
-        if end.y < self.viewport_start || start.y > self.viewport_end {
+        if start == end || end.y < self.viewport_start || start.y > self.viewport_end {
             return Ok(());
         }
 
@@ -159,47 +167,27 @@ impl Pager {
         out.queue(SetForegroundColor(*fg_color))?;
         out.queue(SetBackgroundColor(*bg_color))?;
 
-        // Single-line highlight
-        if start.y == end.y {
-            let line = self.lines[start.y].display();
-            let start_idx = get_utf_index(line, start.x);
-            let end_idx = get_utf_index(line, end.x + 1);
-            let screen_y = (start.y - self.viewport_start) as u16;
-            out.queue(MoveTo(start.x as u16, screen_y))?;
-            out.queue(Print(&line[start_idx..end_idx]))?;
-            out.queue(SetForegroundColor(Color::Reset))?;
-            out.queue(SetBackgroundColor(Color::Reset))?;
-            return Ok(());
-        }
-
-        // Multi-line highlight
         let first_visible_y = start.y.max(self.viewport_start);
         let last_visible_y = end.y.min(self.viewport_end);
 
-        // Draw first line (from start.x to end of line)
-        if start.y >= self.viewport_start && start.y < self.lines.len() {
-            let line = self.lines[start.y].display();
-            let start_idx = get_utf_index(line, start.x);
-            let screen_y = (start.y - self.viewport_start) as u16;
-            out.queue(MoveTo(start.x as u16, screen_y))?;
-            out.queue(Print(&line[start_idx..]))?;
-        }
-
-        // Draw full middle lines
-        for line_y in (first_visible_y + 1)..last_visible_y.min(self.lines.len()) {
+        for line_y in first_visible_y..=last_visible_y {
             let line = self.lines[line_y].display();
+            let line_len = line.chars().count();
+            let start_x = if line_y == start.y { start.x } else { 0 };
+            let end_x = if line_y == end.y { end.x } else { line_len };
+            let start_idx = get_utf_index(line, start_x);
+            let end_idx = get_utf_index(line, end_x);
+            let screen_x = line[..start_idx].width();
             let screen_y = (line_y - self.viewport_start) as u16;
-            out.queue(MoveTo(0, screen_y))?;
-            out.queue(Print(if line.is_empty() { " " } else { line }))?;
-        }
 
-        // Draw last line (from start to end.x)
-        if end.y <= self.viewport_end && end.y < self.lines.len() {
-            let line = self.lines[end.y].display();
-            let end_idx = get_utf_index(line, end.x + 1);
-            let screen_y = (end.y - self.viewport_start) as u16;
-            out.queue(MoveTo(0, screen_y))?;
-            out.queue(Print(&line[..end_idx]))?;
+            if start_idx < end_idx {
+                out.queue(MoveTo(screen_x as u16, screen_y))?;
+                out.queue(Print(&line[start_idx..end_idx]))?;
+            } else if line_y < end.y && screen_x < self.term_width {
+                // A selected newline has no glyph, so highlight one cell at EOL.
+                out.queue(MoveTo(screen_x as u16, screen_y))?;
+                out.queue(Print(' '))?;
+            }
         }
 
         out.queue(SetForegroundColor(Color::Reset))?;
@@ -218,7 +206,9 @@ impl Pager {
     }
 
     fn get_physical_cursor_x(&self) -> usize {
-        self.current_line()[..get_utf_index(self.current_line(), self.cursor_x)].width()
+        self.current_line()[..get_utf_index(self.current_line(), self.cursor_x)]
+            .width()
+            .min(self.term_width.saturating_sub(1))
     }
 
     pub(crate) fn get_physical_cursor_y(&self) -> usize {
@@ -254,12 +244,12 @@ impl Pager {
             && search.error.is_none()
             && !search.results.is_empty()
         {
-            let offset = search.query.chars().count().saturating_sub(1);
+            let match_width = search.query.chars().count();
             let mut out = io::stdout();
 
             for highlight in &search.results {
                 let start = highlight.column_index;
-                let end = highlight.column_index + offset;
+                let end = highlight.column_index + match_width;
                 self.draw_highlight(
                     &Vec2::new(start, highlight.line_index),
                     &Vec2::new(end, highlight.line_index),

@@ -1,83 +1,87 @@
-# Kitty pager copy mode
+# Kitty Emacs copy mode
 
-I love [tmux](https://github.com/tmux/tmux)'s copy mode but I don't want to use it
-as it is way too overkill for what I do so I rewrote something similar.
+A keyboard-driven copy mode for [kitty](https://sw.kovidgoyal.net/kitty/), using
+Emacs-style keys. Kitty passes its scrollback on standard input; the pager lets
+you move through it, search, select a region, and copy that region to the system
+clipboard.
 
-This was made as a pager for the [kitty](https://sw.kovidgoyal.net/kitty/)
-terminal. It receives the full scrollback content in `stdin` and then renders it and allows
-to move with vim motions and copy text.
-
-On [radicle](https://radicle.dev): `rad:zDUezH58HjpjpYumsSMjj7dwKLe3`
-
-## Features
-
-Vim motions for moving around, visual mode for selecting text, copying to clipboard.
-
-Mono-line regex search with highlighting and navigaion with `n` and `N`. There is
-real-time search which can be disabled with a CLI flag. Also supports smart case
-search which can be disabled with a CLI flag as well.
-
-> [!WARNING] 
-> Resizing is not supported. We are working with the raw scrollback which is the
-> exact good size but won't work if terminal window is resized.
+This is a fork of
+[BasileBux/kitty-copy-pager](https://github.com/BasileBux/kitty-copy-pager).
 
 ## Installation
 
-I don't do packaging or releases. If you want to use it, you will need to build
-it from source. Just [install rust stuff](https://rust-lang.org/tools/install/)
-and run `cargo build --release` and you will get your binary.
+Build and install the pager with Rust:
 
-If using *Nix*, you can just run:
 ```bash
-nix run github:basilebux/kitty-copy-pager
+cargo install --path .
 ```
-or install it in your flake like any other flake package.
 
-## NOTES:
-
-The clipboard copy uses [crossterm::clipboard](https://docs.rs/crossterm/latest/crossterm/clipboard/struct.CopyToClipboard.html)
-which might not work for 100% of setups but if your terminal doesn't suck it should
-work.
-
-This is a work in progress. It should be working for the most part but still be a
-bit rough in some places. The performance isn't great for yet but the goal is to
-have the smallest startup time. Super basic vim motions are implemented but more
-will be added in the near future.
+Set it as kitty's scrollback pager:
 
 ```conf
-scrollback_pager kitty-copy-mode --flags
+scrollback_pager kitty-copy-pager
+map cmd+r show_scrollback
+map --when-focus-on cmdline:kitty-copy-pager cmd+r
 ```
-The scrollback is given in `stdin` to the pager.
 
-This won't work as nicely in tmux or software which draws a whole lot of things in
-the terminal. It will remain functional but might not be the best experience.
+The conditional empty mapping passes `Cmd-r` through while the pager is focused.
+Without it, kitty handles the shortcut itself and opens nested pager overlays.
+Apply the same conditional empty mapping to any other shortcut that invokes
+`show_scrollback` or `show_last_command_output`.
 
-## TODO:
+On macOS, enable Option as Meta if it is not already enabled:
 
-- [x] Draw scrollback correctly
-- [x] Basic movement keys (hjkl, arrow keys) -> scrolling render
-- [x] Initiate selection with `v` and copy with `y` or `enter`, switch end with `o`
-- [x] Copying to clipboard
-- [x] More advanced movement keys (b, w, W, e, 0, $, gg, G, etc...)
-- [x] Rework the movement system
-- [x] Try and make the codebase extra clean and extensible
-- [x] Handle `\t`
-- [x] Handle multi-cell unicode chars
-- [x] Add search functionality `/`
-    - [x] Add realtime search highlighting (while typing the search query)
-    - [x] Add match index in status bar (e.g. `[1/5]`)
-- [x] CLI flags for configuration
-- [ ] Make initial viewport at the correct position (currently it is always at the bottom)
-- [ ] Mouse scroll support (no click but only scroll)
-- [ ] Even more advanced movement keys
-- [ ] More advanced selection motions (`vi"`, `va(`, etc...)
-- [ ] Make the status bar look nicer
+```conf
+macos_option_as_alt yes
+```
 
-**Missing key Vim movements:**
-- `+` / `-` next/prev line (first non-blank)
-- `H` / `M` / `L` top/middle/bottom of screen
-- `f` / `F` / `t` / `T` find char fwd/back
-- `{` / `}` paragraph
-- `(` / `)` sentence
-- `Ctrl-f` / `Ctrl-b` page down/up
-- `%` matching bracket
+## Keys
+
+### Movement
+
+| Key | Action |
+| --- | --- |
+| `C-b` / `C-f` | Previous/next character |
+| `C-p` / `C-n` | Previous/next line |
+| `M-b` / `M-f` | Previous word/next word end |
+| `C-a` / `C-e` | Beginning/end of line |
+| `M-m` | First non-whitespace character |
+| `M-<` / `M->` | Beginning/end of scrollback |
+| `M-v` / `C-v` | Page up/down |
+| `C-l` | Recenter the current line |
+| Arrow, Home, End, Page Up, Page Down | Equivalent movement |
+
+### Selection and copying
+
+| Key | Action |
+| --- | --- |
+| `C-Space` | Begin selection |
+| `C-g` | Clear the selection and search highlighting |
+| `M-w`, `C-w`, or `Enter` | Copy the selection and exit |
+| `C-k` | Copy from the cursor to the end of the line and exit |
+
+Copied text is sent to the system clipboard using OSC 52.
+
+### Search
+
+| Key | Action |
+| --- | --- |
+| `C-s` | Start a forward search; press again for the next match |
+| `C-r` | Start a backward search; press again for the previous match |
+| `Enter` | Finish entering the search |
+| `C-g`, `C-c`, or `Escape` | Cancel search input |
+
+Searches use regular expressions, update while you type, and use smart case by
+default.
+
+### Exit
+
+Press `q`, `C-c`, `C-[`, or `Escape` outside search input.
+
+## Options
+
+Run `kitty-copy-pager --help` for display, color, tab width, and search options.
+
+> [!WARNING]
+> Resizing while the pager is open is not supported. The pager renders the raw
+> scrollback at the terminal size kitty used to produce it.

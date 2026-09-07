@@ -8,7 +8,7 @@ impl Pager {
     pub(crate) fn move_to(&mut self, x: usize, y: usize) -> io::Result<()> {
         self.logical_y = min(y, self.lines.len().saturating_sub(1));
         let line_len = self.current_line_len();
-        self.cursor_x = min(x, line_len.saturating_sub(1));
+        self.cursor_x = min(x, line_len);
         self.wish_cursor_x = self.cursor_x;
         self.movement_suffix(true)
     }
@@ -37,10 +37,9 @@ impl Pager {
         motion: WrappingMotionFn,
     ) -> io::Result<()> {
         let mut wrapped = false;
-        let y = self.logical_y.saturating_sub(1);
-        if y > 0 {
-            self.logical_y = y;
-            self.cursor_x = self.current_line_len().saturating_sub(1);
+        if self.logical_y > 0 {
+            self.logical_y -= 1;
+            self.cursor_x = self.current_line_len();
             wrapped = true;
         }
         self.movement_suffix(wrapped)?;
@@ -53,7 +52,7 @@ impl Pager {
             self.lines.len().saturating_sub(1),
         );
         let line_len = self.current_line_len();
-        self.cursor_x = min(self.wish_cursor_x, line_len.saturating_sub(1));
+        self.cursor_x = min(self.wish_cursor_x, line_len);
         self.movement_suffix(true)
     }
 
@@ -61,18 +60,41 @@ impl Pager {
     pub(crate) fn move_vertically_to(&mut self, y: usize) -> io::Result<()> {
         self.move_to(self.cursor_x, y)?;
         let line_len = self.current_line_len();
-        self.cursor_x = min(self.wish_cursor_x, line_len.saturating_sub(1));
+        self.cursor_x = min(self.wish_cursor_x, line_len);
         self.movement_suffix(true)
     }
 
     pub(crate) fn move_horizontally_by(&mut self, amount: isize) -> io::Result<()> {
         let line_len = self.current_line_len();
-        self.cursor_x = min(
-            self.cursor_x.saturating_add_signed(amount),
-            line_len.saturating_sub(1),
-        );
+        self.cursor_x = min(self.cursor_x.saturating_add_signed(amount), line_len);
         self.wish_cursor_x = self.cursor_x;
         self.movement_suffix(false)
+    }
+
+    pub(crate) fn move_char_backward(&mut self) -> io::Result<()> {
+        if self.cursor_x > 0 {
+            return self.move_horizontally_by(-1);
+        }
+        if self.logical_y > 0 {
+            self.logical_y -= 1;
+            self.cursor_x = self.current_line_len();
+            self.wish_cursor_x = self.cursor_x;
+            return self.movement_suffix(true);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn move_char_forward(&mut self) -> io::Result<()> {
+        if self.cursor_x < self.current_line_len() {
+            return self.move_horizontally_by(1);
+        }
+        if self.logical_y < self.lines.len().saturating_sub(1) {
+            self.logical_y += 1;
+            self.cursor_x = 0;
+            self.wish_cursor_x = 0;
+            return self.movement_suffix(true);
+        }
+        Ok(())
     }
 
     pub(crate) fn move_horizontally_to(&mut self, x: usize) -> io::Result<()> {
@@ -101,6 +123,20 @@ impl Pager {
             return true;
         }
         false
+    }
+
+    pub(crate) fn recenter(&mut self) -> io::Result<()> {
+        let visible_rows = self.term_height.saturating_sub(1).max(1);
+        let max_start = self.lines.len().saturating_sub(visible_rows);
+        self.viewport_start = self
+            .logical_y
+            .saturating_sub(visible_rows / 2)
+            .min(max_start);
+        self.viewport_end = self
+            .viewport_start
+            .saturating_add(visible_rows - 1)
+            .min(self.lines.len().saturating_sub(1));
+        self.draw()
     }
 
     pub(crate) fn movement_suffix(&mut self, rerender: bool) -> io::Result<()> {

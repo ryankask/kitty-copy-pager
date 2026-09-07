@@ -1,5 +1,5 @@
 use super::Pager;
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use regex::Regex;
 use std::io::{self};
 use unicode_width::UnicodeWidthStr;
@@ -7,6 +7,12 @@ use unicode_width::UnicodeWidthStr;
 pub(crate) struct SearchResult {
     pub line_index: usize,
     pub column_index: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SearchDirection {
+    Forward,
+    Backward,
 }
 
 #[derive(PartialEq, Clone)]
@@ -19,6 +25,7 @@ pub(crate) enum SearchState {
 
 pub(crate) struct Search {
     pub query: String,
+    pub direction: SearchDirection,
     pub state: SearchState,
     pub results: Vec<SearchResult>,
     pub error: Option<String>,
@@ -28,9 +35,10 @@ pub(crate) struct Search {
 }
 
 impl Search {
-    pub fn new(state: SearchState) -> Self {
+    pub fn new(state: SearchState, direction: SearchDirection) -> Self {
         Search {
             query: String::new(),
+            direction,
             state,
             results: Vec::new(),
             error: None,
@@ -39,9 +47,10 @@ impl Search {
             last_match_pos: None,
         }
     }
-    pub fn new_with_err(msg: &str) -> Self {
+    pub fn new_with_err(msg: &str, direction: SearchDirection) -> Self {
         Search {
             query: String::new(),
+            direction,
             state: SearchState::Hidden,
             results: Vec::new(),
             error: Some(msg.to_string()),
@@ -70,7 +79,30 @@ impl Pager {
         }
     }
 
-    pub(crate) fn search_mode(&mut self, event: KeyEvent) -> io::Result<bool> {
+    pub(crate) fn begin_or_repeat_search(&mut self, direction: SearchDirection) -> io::Result<()> {
+        let can_repeat = self.search.as_ref().is_some_and(|search| {
+            matches!(
+                search.state,
+                SearchState::PendingRedraw | SearchState::Highlighted
+            ) && search.error.is_none()
+                && !search.results.is_empty()
+        });
+
+        if can_repeat {
+            if let Some(search) = &mut self.search {
+                search.direction = direction;
+            }
+            return match direction {
+                SearchDirection::Forward => self.move_to_next_match(),
+                SearchDirection::Backward => self.move_to_prev_match(),
+            };
+        }
+
+        self.search = Some(Search::new(SearchState::Typing, direction));
+        self.draw_status_line()
+    }
+
+    pub(crate) fn search_mode(&mut self, event: KeyEvent) -> io::Result<Option<SearchDirection>> {
         let get_lines = |query_width: usize, term_width: usize, long_search: bool| -> usize {
             if long_search {
                 (query_width as f64 / term_width.saturating_sub(1) as f64).ceil() as usize
@@ -88,21 +120,33 @@ impl Pager {
         };
 
         let Some(search) = &mut self.search else {
-            self.search = Some(Search::new(SearchState::Typing));
-            self.draw_status_line()?;
-            return Ok(false);
+            return Ok(None);
         };
-        if search.state != SearchState::Typing {
-            search.state = SearchState::Typing;
-            search.error = None;
-            search.results.clear();
-            search.query.clear();
-            self.draw_status_line()?;
-            return Ok(false);
-        }
 
+        let control = event.modifiers == KeyModifiers::CONTROL;
         match event.code {
-            KeyCode::Char(c) => {
+            KeyCode::Char('s') if control => {
+                search.direction = SearchDirection::Forward;
+                return Ok(Some(SearchDirection::Forward));
+            }
+            KeyCode::Char('r') if control => {
+                search.direction = SearchDirection::Backward;
+                return Ok(Some(SearchDirection::Backward));
+            }
+            KeyCode::Char('g') | KeyCode::Char('c') if control => {
+                search.state = SearchState::Hidden;
+                self.draw()?;
+                return Ok(None);
+            }
+            KeyCode::Char(c)
+                if !event.modifiers.intersects(
+                    KeyModifiers::CONTROL
+                        | KeyModifiers::ALT
+                        | KeyModifiers::SUPER
+                        | KeyModifiers::HYPER
+                        | KeyModifiers::META,
+                ) =>
+            {
                 search.query.push(c);
                 if self.settings.real_time_search {
                     self.search_realtime();
@@ -117,11 +161,9 @@ impl Pager {
             KeyCode::Esc => {
                 search.state = SearchState::Hidden;
                 self.draw()?;
-                return Ok(false);
+                return Ok(None);
             }
-            KeyCode::Enter => {
-                return Ok(true);
-            }
+            KeyCode::Enter => return Ok(Some(search.direction)),
             _ => {}
         }
 
@@ -140,7 +182,7 @@ impl Pager {
         } else {
             self.draw_status_line()?;
         }
-        Ok(false)
+        Ok(None)
     }
 
     /// Performs real-time search while typing.
@@ -257,7 +299,10 @@ impl Pager {
                 self.move_to(col, line)?;
             }
             None => {
-                self.search = Some(Search::new_with_err("Error: No search query"));
+                self.search = Some(Search::new_with_err(
+                    "Error: No search query",
+                    SearchDirection::Forward,
+                ));
             }
         }
         Ok(())
@@ -301,7 +346,10 @@ impl Pager {
                 self.move_to(col, line)?;
             }
             None => {
-                self.search = Some(Search::new_with_err("Error: No search query"));
+                self.search = Some(Search::new_with_err(
+                    "Error: No search query",
+                    SearchDirection::Backward,
+                ));
             }
         }
         Ok(())
@@ -362,18 +410,17 @@ impl Pager {
                 }
             }
             None => {
-                self.search = Some(Search::new_with_err("Error: No search query"));
+                self.search = Some(Search::new_with_err(
+                    "Error: No search query",
+                    if next {
+                        SearchDirection::Forward
+                    } else {
+                        SearchDirection::Backward
+                    },
+                ));
                 self.draw_status_line()?;
             }
         }
         Ok(())
-    }
-
-    pub(crate) fn move_to_closest_next_match(&mut self) -> io::Result<()> {
-        self.move_to_closest_match(true)
-    }
-
-    pub(crate) fn move_to_closest_prev_match(&mut self) -> io::Result<()> {
-        self.move_to_closest_match(false)
     }
 }

@@ -7,18 +7,35 @@ pub struct ColorArg(Color);
 
 pub(crate) const PROMPT_CURSOR_OFFSET: usize = 1;
 pub(crate) const SCROLLOFF: usize = 4;
-pub(crate) const SCROLL_JUMP: usize = 10;
 pub(crate) const TAB_WIDTH: usize = 8;
 
-pub(crate) const STATUS_LINE_BG_COLOR: Color = Color::DarkGrey;
-pub(crate) const STATUS_LINE_FG_COLOR: Color = Color::White;
+// Modus Operandi semantic colors. These mirror the theme's modeline, error,
+// region, and subtle blue backgrounds instead of relying on bright ANSI colors.
+pub(crate) const STATUS_LINE_BG_COLOR: Color = Color::Rgb {
+    r: 0xc8,
+    g: 0xc8,
+    b: 0xc8,
+};
+pub(crate) const STATUS_LINE_FG_COLOR: Color = Color::Black;
 
-pub(crate) const SEARCH_ERROR_FG_COLOR: Color = Color::Red;
+pub(crate) const SEARCH_ERROR_FG_COLOR: Color = Color::Rgb {
+    r: 0xa6,
+    g: 0x00,
+    b: 0x00,
+};
 
-pub(crate) const SELECTION_BG_COLOR: Color = Color::Yellow;
+pub(crate) const SELECTION_BG_COLOR: Color = Color::Rgb {
+    r: 0xbd,
+    g: 0xbd,
+    b: 0xbd,
+};
 pub(crate) const SELECTION_FG_COLOR: Color = Color::Black;
 
-pub(crate) const SEARCH_HIGHLIGHT_BG_COLOR: Color = Color::Blue;
+pub(crate) const SEARCH_HIGHLIGHT_BG_COLOR: Color = Color::Rgb {
+    r: 0xcc,
+    g: 0xdf,
+    b: 0xff,
+};
 pub(crate) const SEARCH_HIGHLIGHT_FG_COLOR: Color = Color::Black;
 
 // realtime_search: true
@@ -27,7 +44,6 @@ pub(crate) const SEARCH_HIGHLIGHT_FG_COLOR: Color = Color::Black;
 pub struct Settings {
     pub prompt_cursor_offset: usize,
     pub scrolloff: usize,
-    pub scroll_jump: usize,
     pub tab_width: usize,
     pub status_line_bg_color: Color,
     pub status_line_fg_color: Color,
@@ -45,7 +61,6 @@ impl Settings {
         Self {
             prompt_cursor_offset: args.prompt_cursor_offset,
             scrolloff: args.scrolloff,
-            scroll_jump: SCROLL_JUMP,
             tab_width: args.tab_width,
             status_line_bg_color: args.status_line_bg_color.into(),
             status_line_fg_color: args.status_line_fg_color.into(),

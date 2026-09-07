@@ -1,15 +1,14 @@
 use clap::Parser;
 use crossterm::{
-    cursor::MoveTo,
+    cursor::{MoveTo, Show},
     event::{Event, poll, read},
     execute,
+    style::ResetColor,
     terminal::{
         Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
         enable_raw_mode,
     },
 };
-#[cfg(feature = "dhat-heap")]
-use dhat;
 use kitty_copy_pager::pager::Pager;
 use kitty_copy_pager::settings::*;
 use std::io::{self, Write, stdout};
@@ -22,6 +21,40 @@ const LOGGING_ENABLED: bool = false;
 
 const INPUT_POLLING_RATE: u64 = 100;
 
+struct TerminalSession {
+    alternate_screen: bool,
+    raw_mode: bool,
+}
+
+impl TerminalSession {
+    fn enter() -> io::Result<Self> {
+        let mut session = Self {
+            alternate_screen: false,
+            raw_mode: false,
+        };
+
+        session.alternate_screen = true;
+        execute!(stdout(), EnterAlternateScreen, Clear(ClearType::All))?;
+        enable_raw_mode()?;
+        session.raw_mode = true;
+        execute!(stdout(), MoveTo(0, 0))?;
+        stdout().flush()?;
+
+        Ok(session)
+    }
+}
+
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        if self.raw_mode {
+            let _ = disable_raw_mode();
+        }
+        if self.alternate_screen {
+            let _ = execute!(stdout(), ResetColor, Show, LeaveAlternateScreen);
+        }
+    }
+}
+
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
@@ -32,6 +65,9 @@ fn main() -> io::Result<()> {
     let args = Args::parse();
     let settings = Settings::from_args(args);
     let mut sb = Pager::new(settings)?;
+    if sb.is_empty() {
+        return Ok(());
+    }
 
     if LOGGING_ENABLED {
         WriteLogger::init(
@@ -42,10 +78,7 @@ fn main() -> io::Result<()> {
         .unwrap();
     }
 
-    execute!(stdout(), EnterAlternateScreen, Clear(ClearType::All))?;
-    enable_raw_mode()?;
-    execute!(stdout(), MoveTo(0, 0))?;
-    stdout().flush()?;
+    let _terminal = TerminalSession::enter()?;
 
     sb.draw()?;
     sb.draw_status_line()?;
@@ -62,7 +95,5 @@ fn main() -> io::Result<()> {
         }
     }
 
-    disable_raw_mode()?;
-    execute!(stdout(), LeaveAlternateScreen)?;
     Ok(())
 }

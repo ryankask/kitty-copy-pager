@@ -1,97 +1,77 @@
-use super::Pager;
+use super::keybindings::{Action, action_for};
+use super::{Pager, SearchDirection, SearchState};
 
-use crossterm::event::{KeyCode, KeyEvent};
-use std::io::{self};
-
-use crate::pager::search::SearchState;
 use crate::selection::Selection;
+use crossterm::event::KeyEvent;
+use std::io;
 
 impl Pager {
     pub(crate) fn normal_mode(&mut self, event: KeyEvent) -> io::Result<bool> {
-        match event.code {
-            KeyCode::Char('q') => return Ok(true),
+        let Some(action) = action_for(event) else {
+            return Ok(false);
+        };
 
-            // Simple movement
-            KeyCode::Char('j') => self.move_vertically_by(1)?,
-            KeyCode::Char('k') => self.move_vertically_by(-1)?,
-            KeyCode::Char('d') => self.move_vertically_by(self.settings.scroll_jump as isize)?, // Replaces ctrl+d
-            KeyCode::Char('u') => self.move_vertically_by(-(self.settings.scroll_jump as isize))?, // Replaces ctrl+u
-            KeyCode::Char('h') => self.move_horizontally_by(-1)?,
-            KeyCode::Char('l') => self.move_horizontally_by(1)?,
-
-            // Movement to the end
-            KeyCode::Char('0') => self.move_horizontally_to(0)?,
-            KeyCode::Char('_') | KeyCode::Char('^') => self.movement_underscore()?,
-            KeyCode::Char('$') => self.movement_dollar()?,
-
-            // Movement to next/prev word
-            KeyCode::Char('w') => self.movement_w(false, false)?,
-            KeyCode::Char('W') => self.movement_w(true, false)?,
-            KeyCode::Char('b') => self.movement_b(false, false)?,
-            KeyCode::Char('B') => self.movement_b(true, false)?,
-            KeyCode::Char('e') => self.movement_e(false, false)?,
-            KeyCode::Char('E') => self.movement_e(true, false)?,
-
-            // Top/Bottom movement
-            KeyCode::Char('G') => self.movement_G()?,
-            KeyCode::Char('g') => {
-                if self.movement_gg()? {
-                    self.movement_suffix(true)?;
-                }
-                self.input_buffer.push_back(event.code);
+        match action {
+            Action::BackwardChar => self.move_char_backward()?,
+            Action::ForwardChar => self.move_char_forward()?,
+            Action::PreviousLine => self.move_vertically_by(-1)?,
+            Action::NextLine => self.move_vertically_by(1)?,
+            Action::PreviousWord => self.movement_b(false, false)?,
+            Action::NextWordEnd => self.movement_e(false, false)?,
+            Action::BeginningOfLine => self.move_horizontally_to(0)?,
+            Action::EndOfLine => self.movement_dollar()?,
+            Action::BackToIndentation => self.movement_underscore()?,
+            Action::BeginningOfBuffer => self.move_to(0, 0)?,
+            Action::EndOfBuffer => {
+                self.move_to(usize::MAX, self.lines.len().saturating_sub(1))?;
             }
-
-            // Selection motions
-            KeyCode::Char('v') => {
+            Action::PageUp => {
+                let page = self.page_size();
+                self.move_vertically_by(-page)?;
+            }
+            Action::PageDown => {
+                let page = self.page_size();
+                self.move_vertically_by(page)?;
+            }
+            Action::Recenter => self.recenter()?,
+            Action::BeginSelection => {
                 self.selection = Some(Selection::with_coords(
                     self.cursor_x,
                     self.logical_y,
                     self.cursor_x,
                     self.logical_y,
                 ));
+                self.draw()?;
             }
-            KeyCode::Char('y') | KeyCode::Enter => {
-                self.copy_selection()?;
-                return Ok(true);
-            }
-            KeyCode::Esc => {
-                if self.selection.is_some() {
-                    self.selection = None;
-                } else if let Some(search) = &mut self.search {
+            Action::ClearSelection => {
+                self.selection = None;
+                if let Some(search) = &mut self.search {
                     search.state = SearchState::Hidden;
                 }
                 self.draw()?;
             }
-
-            // Search motions
-            KeyCode::Char('/') => {
-                self.search_mode(event)?;
-            }
-            KeyCode::Char('n') => {
-                if let Some(search) = &mut self.search {
-                    if search.state != SearchState::Highlighted {
-                        search.state = SearchState::PendingRedraw;
-                        self.move_to_closest_next_match()?;
-                    } else {
-                        self.move_to_next_match()?;
-                    }
+            Action::CopySelection => {
+                if self.selection.is_some() {
+                    self.copy_selection()?;
+                    return Ok(true);
                 }
             }
-            KeyCode::Char('N') => {
-                if let Some(search) = &mut self.search {
-                    if search.state != SearchState::Highlighted {
-                        search.state = SearchState::PendingRedraw;
-                        self.move_to_closest_prev_match()?;
-                    } else {
-                        self.move_to_prev_match()?;
-                    }
-                }
+            Action::CopyEndOfLine => {
+                self.copy_end_of_line()?;
+                return Ok(true);
             }
-
-            _ => {
-                self.input_buffer.push_back(event.code);
+            Action::SearchForward => {
+                self.begin_or_repeat_search(SearchDirection::Forward)?;
             }
+            Action::SearchBackward => {
+                self.begin_or_repeat_search(SearchDirection::Backward)?;
+            }
+            Action::Quit => return Ok(true),
         }
         Ok(false)
+    }
+
+    fn page_size(&self) -> isize {
+        self.term_height.saturating_sub(2).max(1) as isize
     }
 }
