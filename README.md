@@ -15,18 +15,24 @@ Build and install the pager with Rust:
 cargo install --path .
 ```
 
-Set it as kitty's scrollback pager:
+Set the pager and bind the two copy-mode shortcuts in `kitty.conf`.
 
 ```conf
 scrollback_pager kitty-copy-pager
-map cmd+r show_scrollback
+map cmd+r launch --type=overlay --stdin-source=@screen_scrollback --stdin-add-formatting --stdin-add-line-wrap-markers kitty-copy-pager --wrap-markers
+map ctrl+cmd+r launch --type=overlay --stdin-source=@last_cmd_output --stdin-add-formatting --stdin-add-line-wrap-markers kitty-copy-pager --wrap-markers
 map --when-focus-on cmdline:kitty-copy-pager cmd+r
+map --when-focus-on cmdline:kitty-copy-pager ctrl+cmd+r
 ```
 
-The conditional empty mapping passes `Cmd-r` through while the pager is focused.
-Without it, kitty handles the shortcut itself and opens nested pager overlays.
-Apply the same conditional empty mapping to any other shortcut that invokes
-`show_scrollback` or `show_last_command_output`.
+`Cmd-r` opens the full scrollback. `Ctrl-Cmd-r` opens the last command's output
+with kitty shell integration. These mappings pass kitty's wrap markers to the
+pager. A long URL stays wrapped on screen and copies as one string. Real line
+breaks are preserved, even at the right edge of the terminal. The conditional
+mappings pass both shortcuts through while the pager is focused.
+
+The built-in `show_scrollback` action converts wraps to newlines before sending
+text to the configured pager. Use the `launch` mappings for wrap-aware copying.
 
 On macOS, enable Option as Meta if it is not already enabled:
 

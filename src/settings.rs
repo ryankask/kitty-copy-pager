@@ -42,6 +42,7 @@ pub(crate) const SEARCH_HIGHLIGHT_FG_COLOR: Color = Color::Black;
 // smartcase_search: true
 
 pub struct Settings {
+    pub wrap_markers: bool,
     pub prompt_cursor_offset: usize,
     pub scrolloff: usize,
     pub tab_width: usize,
@@ -59,6 +60,7 @@ pub struct Settings {
 impl Settings {
     pub fn from_args(args: Args) -> Self {
         Self {
+            wrap_markers: args.wrap_markers,
             prompt_cursor_offset: args.prompt_cursor_offset,
             scrolloff: args.scrolloff,
             tab_width: args.tab_width,
@@ -81,6 +83,10 @@ impl Settings {
     after_help = "Colors accept names, #RRGGBB, rgb:R,G,B, and ansi:0 through ansi:255."
 )]
 pub struct Args {
+    /// Read kitty's line-wrap markers and join soft-wrapped rows when copying.
+    #[arg(long)]
+    pub wrap_markers: bool,
+
     /// Initial offset from the final character (1 places the cursor after it).
     #[arg(long, default_value_t = PROMPT_CURSOR_OFFSET)]
     pub prompt_cursor_offset: usize,

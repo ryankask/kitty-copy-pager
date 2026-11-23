@@ -11,7 +11,7 @@ use crossterm::{
 };
 use kitty_copy_pager::pager::Pager;
 use kitty_copy_pager::settings::*;
-use std::io::{self, Write, stdout};
+use std::io::{self, IsTerminal, Write, stdout};
 use std::time::Duration;
 
 use log::*;
@@ -63,6 +63,10 @@ fn main() -> io::Result<()> {
     #[cfg(feature = "dhat-heap")]
     let _profiler = dhat::Profiler::new_heap();
     let args = Args::parse();
+    // Kitty leaves the overlay's tty on stdin when the last command produced no output.
+    if args.wrap_markers && io::stdin().is_terminal() {
+        return Ok(());
+    }
     let settings = Settings::from_args(args);
     let mut sb = Pager::new(settings)?;
     if sb.is_empty() {

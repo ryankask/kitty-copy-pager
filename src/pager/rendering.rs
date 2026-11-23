@@ -137,7 +137,7 @@ impl Pager {
         paint_frame(|out| {
             out.queue(SetAttribute(Attribute::Reset))?;
             for y in rows.clone() {
-                let line = &self.lines[y].display()[self.row_start_byte(y)..];
+                let line = &self.lines[y].text.display()[self.row_start_byte(y)..];
                 let used = prefix_by_width(line, self.term_width).width();
                 if used < self.term_width {
                     // Remove leftover text and highlighted newlines in the default background.
@@ -146,13 +146,15 @@ impl Pager {
                 }
             }
             // A color or attribute can start above the first row being repainted.
-            for line in &self.lines[visible.start..rows.start] {
-                out.queue(Print(line.style_changes()))?;
+            for row in &self.lines[visible.start..rows.start] {
+                out.queue(Print(row.text.style_changes()))?;
             }
             for y in rows.clone() {
                 out.queue(MoveTo(0, (y - visible.start) as u16))?;
                 out.queue(Print(
-                    self.lines[y].for_screen(self.row_start_byte(y), self.term_width),
+                    self.lines[y]
+                        .text
+                        .for_screen(self.row_start_byte(y), self.term_width),
                 ))?;
             }
 
@@ -178,7 +180,7 @@ impl Pager {
         out.queue(SetForegroundColor(self.settings.search_highlight_fg_color))?;
         out.queue(SetBackgroundColor(self.settings.search_highlight_bg_color))?;
         for y in rows {
-            let line = self.lines[y].display();
+            let line = self.lines[y].text.display();
             let left = self.row_start_byte(y);
             let text = prefix_by_width(&line[left..], self.term_width);
             let first_col = line[..left].chars().count();
@@ -219,7 +221,7 @@ impl Pager {
         out.queue(SetForegroundColor(self.settings.selection_fg_color))?;
         out.queue(SetBackgroundColor(self.settings.selection_bg_color))?;
         for y in start.y.max(rows.start)..=end.y.min(rows.end - 1) {
-            let line = self.lines[y].display();
+            let line = self.lines[y].text.display();
             let left = self.row_start_byte(y);
             let start_byte = if y == start.y {
                 get_utf_index(line, start.x).max(left)
@@ -242,7 +244,11 @@ impl Pager {
             let text = prefix_by_width(&line[start_byte..end_byte], available);
             out.queue(MoveTo(x as u16, (y - self.viewport_start) as u16))?;
             out.queue(Print(text))?;
-            if y < end.y && text.len() == end_byte - start_byte && text.width() < available {
+            if y < end.y
+                && !self.lines[y + 1].continues_previous
+                && text.len() == end_byte - start_byte
+                && text.width() < available
+            {
                 // A selected newline occupies the first cell after the text.
                 out.queue(Print(' '))?;
             }

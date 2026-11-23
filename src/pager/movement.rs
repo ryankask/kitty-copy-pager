@@ -20,8 +20,9 @@ impl Pager {
         self.logical_y = y.min(self.lines.len() - 1);
         self.cursor_x = x.min(self.current_line_len());
         self.wish_cursor_x = self.cursor_x;
-        self.line_start_byte =
-            self.lines[self.logical_y].screen_start(self.cursor_x, self.term_width);
+        self.line_start_byte = self.lines[self.logical_y]
+            .text
+            .screen_start(self.cursor_x, self.term_width);
         self.expand_selection();
 
         let rows = self.visible_rows();

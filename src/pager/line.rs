@@ -1,9 +1,40 @@
 use crate::utils::{get_utf_index, prefix_by_width, suffix_by_width};
 use std::borrow::Cow;
 use std::fmt::Write;
+use std::io::{self, BufRead};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 use vte::{Params, Parser, Perform};
+
+pub(super) struct ScrollbackRow {
+    pub(super) text: Line,
+    pub(super) continues_previous: bool,
+}
+
+pub(super) fn read_rows(
+    input: impl BufRead,
+    tab_width: usize,
+    wrap_markers: bool,
+) -> io::Result<Vec<ScrollbackRow>> {
+    let mut rows = Vec::new();
+    for line in input.lines() {
+        let line = line?;
+        // lines() removes hard LF and CRLF endings. A remaining CR in kitty's
+        // marked export separates two screen rows of the same logical line.
+        if wrap_markers && line.contains('\r') {
+            rows.extend(line.split('\r').enumerate().map(|(i, part)| ScrollbackRow {
+                text: Line::from_scrollback(part.to_owned(), tab_width),
+                continues_previous: i != 0,
+            }));
+        } else {
+            rows.push(ScrollbackRow {
+                text: Line::from_scrollback(line, tab_width),
+                continues_previous: false,
+            });
+        }
+    }
+    Ok(rows)
+}
 
 /// Plain lines share their display and clipboard text. Formatted lines also retain the input.
 #[derive(Clone)]

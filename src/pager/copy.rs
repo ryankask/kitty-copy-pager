@@ -1,32 +1,30 @@
-use super::{Line, Pager};
+use super::{Pager, ScrollbackRow};
 
 use crate::selection::*;
 use crate::utils::get_utf_index;
 use crossterm::{clipboard::CopyToClipboard, execute};
 use std::io::{self, Write, stdout};
 
-fn selected_text(lines: &[Line], selection: &Selection) -> String {
+fn selected_text(lines: &[ScrollbackRow], selection: &Selection) -> String {
     let mut text = String::new();
     let end_y = selection.end.y.min(lines.len().saturating_sub(1));
-    let last_i = end_y.saturating_sub(selection.start.y);
-
-    for (i, line) in lines[selection.start.y..=end_y].iter().enumerate() {
-        let line = line.display();
-        if i == 0 && i == last_i {
-            let start = get_utf_index(line, selection.start.x);
-            let end = get_utf_index(line, selection.end.x);
-            text.push_str(&line[start..end]);
-        } else if i == 0 {
-            let start = get_utf_index(line, selection.start.x);
-            text.push_str(&line[start..]);
-            text.push('\n');
-        } else if i == last_i {
-            let end = get_utf_index(line, selection.end.x);
-            text.push_str(&line[..end]);
-        } else {
-            text.push_str(line);
+    let rows = &lines[selection.start.y..=end_y];
+    for (i, row) in rows.iter().enumerate() {
+        if i > 0 && !row.continues_previous {
             text.push('\n');
         }
+        let line = row.text.display();
+        let start = if i == 0 {
+            get_utf_index(line, selection.start.x)
+        } else {
+            0
+        };
+        let end = if i + 1 == rows.len() {
+            get_utf_index(line, selection.end.x)
+        } else {
+            line.len()
+        };
+        text.push_str(&line[start..end]);
     }
 
     text
@@ -73,11 +71,11 @@ impl Pager {
         let Some(sel) = &self.selection else {
             return Ok(());
         };
-        if sel.start == sel.end {
+        let text = selected_text(&self.lines, sel);
+        if text.is_empty() {
             return Ok(());
         }
 
-        let text = selected_text(&self.lines, sel);
         let mut out = stdout();
         execute!(out, CopyToClipboard::to_clipboard_from(&text))?;
         out.flush()?;
@@ -88,11 +86,15 @@ impl Pager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pager::Line;
 
-    fn lines(input: &[&str]) -> Vec<Line> {
+    fn lines(input: &[&str]) -> Vec<ScrollbackRow> {
         input
             .iter()
-            .map(|line| Line::new((*line).to_string()))
+            .map(|line| ScrollbackRow {
+                text: Line::new((*line).to_string()),
+                continues_previous: false,
+            })
             .collect()
     }
 

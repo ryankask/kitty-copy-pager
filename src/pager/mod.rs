@@ -3,6 +3,7 @@ use crate::selection::*;
 use crate::settings::Settings;
 use crossterm::event::{KeyEvent, KeyEventKind};
 pub use line::Line;
+use line::{ScrollbackRow, read_rows};
 use std::io::{self, stdin};
 
 mod copy;
@@ -15,7 +16,7 @@ mod rendering;
 mod search;
 
 pub struct Pager {
-    pub(crate) lines: Vec<Line>,
+    lines: Vec<ScrollbackRow>,
     pub(crate) cursor_x: usize, // Character offset, including the position after the last character.
     pub(crate) wish_cursor_x: usize,
     pub(crate) logical_y: usize,
@@ -30,10 +31,7 @@ pub struct Pager {
 
 impl Pager {
     pub fn new(settings: Settings) -> io::Result<Self> {
-        let mut lines = Vec::<Line>::new();
-        for line in stdin().lines() {
-            lines.push(Line::from_scrollback(line?, settings.tab_width));
-        }
+        let mut lines = read_rows(stdin().lock(), settings.tab_width, settings.wrap_markers)?;
         let (term_width, term_height) = if lines.is_empty() {
             (1, 1)
         } else {
@@ -44,15 +42,15 @@ impl Pager {
 
         // The pager may contain empty lines at the end
         let mut last_non_empty_line_idx = lines.len().saturating_sub(1);
-        while last_non_empty_line_idx > 0 && lines[last_non_empty_line_idx].display().is_empty() {
+        while last_non_empty_line_idx > 0 && lines[last_non_empty_line_idx].text.is_empty() {
             last_non_empty_line_idx -= 1;
         }
         lines.truncate(last_non_empty_line_idx + 1);
 
         let cursor_x = lines
             .last()
-            .map(|line| {
-                let line_len = line.display().chars().count();
+            .map(|row| {
+                let line_len = row.text.display().chars().count();
                 line_len
                     .saturating_sub(1)
                     .saturating_add(settings.prompt_cursor_offset)
@@ -74,7 +72,7 @@ impl Pager {
                 .saturating_sub(term_height.saturating_sub(1).max(1)),
             line_start_byte: lines
                 .last()
-                .map_or(0, |line| line.screen_start(cursor_x, term_width)),
+                .map_or(0, |row| row.text.screen_start(cursor_x, term_width)),
 
             lines,
 
@@ -109,7 +107,7 @@ impl Pager {
 
     /// Gets the current line (display/stripped version)
     fn current_line(&self) -> &str {
-        self.lines[self.logical_y].display()
+        self.lines[self.logical_y].text.display()
     }
 
     /// Length in characters, excluding terminal formatting.

@@ -24,7 +24,7 @@ impl Pager {
 
     pub(crate) fn previous_word(&mut self) -> io::Result<()> {
         for y in (0..=self.logical_y).rev() {
-            let line = self.lines[y].display();
+            let line = self.lines[y].text.display();
             let (prefix, column) = if y == self.logical_y {
                 (&line[..get_utf_index(line, self.cursor_x)], self.cursor_x)
             } else {
@@ -39,7 +39,7 @@ impl Pager {
 
     pub(crate) fn next_word_end(&mut self) -> io::Result<()> {
         for y in self.logical_y..self.lines.len() {
-            let line = self.lines[y].display();
+            let line = self.lines[y].text.display();
             let column = if y == self.logical_y {
                 self.cursor_x
             } else {

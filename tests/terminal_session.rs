@@ -35,8 +35,26 @@ fn run_pager_with(
     scrollback: &str,
     keystrokes: Option<&[u8]>,
     detach_controlling_terminal: bool,
-    (cols, rows): (u16, u16),
+    size: (u16, u16),
     args: &[&str],
+) -> PagerOutcome {
+    let shell_command = if detach_controlling_terminal {
+        "printf '%s' \"$SCROLLBACK\" | setsid \"$PAGER_BIN\" \"$@\""
+    } else {
+        "printf '%s' \"$SCROLLBACK\" | \"$PAGER_BIN\" \"$@\""
+    };
+    let mut command = CommandBuilder::new("sh");
+    command.args(["-c", shell_command, "pager-test"]);
+    command.args(args);
+    command.env("SCROLLBACK", scrollback);
+    command.env("PAGER_BIN", env!("CARGO_BIN_EXE_kitty-copy-pager"));
+    run_terminal_session(command, keystrokes, size)
+}
+
+fn run_terminal_session(
+    command: CommandBuilder,
+    keystrokes: Option<&[u8]>,
+    (cols, rows): (u16, u16),
 ) -> PagerOutcome {
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -56,17 +74,6 @@ fn run_pager_with(
         let _ = reader.read_to_end(&mut output);
         output
     });
-
-    let shell_command = if detach_controlling_terminal {
-        "printf '%s' \"$SCROLLBACK\" | setsid \"$PAGER_BIN\" \"$@\""
-    } else {
-        "printf '%s' \"$SCROLLBACK\" | \"$PAGER_BIN\" \"$@\""
-    };
-    let mut command = CommandBuilder::new("sh");
-    command.args(["-c", shell_command, "pager-test"]);
-    command.args(args);
-    command.env("SCROLLBACK", scrollback);
-    command.env("PAGER_BIN", env!("CARGO_BIN_EXE_kitty-copy-pager"));
 
     let mut child = pair
         .slave
@@ -150,6 +157,15 @@ fn empty_scrollback_exits_without_entering_the_alternate_screen() {
 }
 
 #[test]
+fn an_empty_kitty_launch_with_terminal_stdin_exits_immediately() {
+    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_kitty-copy-pager"));
+    command.arg("--wrap-markers");
+    let outcome = run_terminal_session(command, None, (8, 4));
+    assert!(outcome.success && !outcome.entered_raw_mode);
+    assert!(!contains(&outcome.output, ENTER_ALTERNATE_SCREEN));
+}
+
+#[test]
 fn quitting_restores_the_screen_and_terminal_mode() {
     let outcome = run_pager("first line\nsecond line\n", Some(b"q"), false);
 
@@ -158,6 +174,37 @@ fn quitting_restores_the_screen_and_terminal_mode() {
     assert!(contains(&outcome.output, ENTER_ALTERNATE_SCREEN));
     assert!(contains(&outcome.output, LEAVE_ALTERNATE_SCREEN));
     assert!(outcome.restored_terminal_mode);
+}
+
+#[test]
+fn copying_across_a_soft_wrap_at_the_right_margin_joins_the_displayed_rows() {
+    let outcome = run_pager_with(
+        "\x1b[32mhttps://\r\x1b[0mex.test\r",
+        Some(b"\x1b<\0\x0e\x05\r"),
+        false,
+        (8, 4),
+        &["--wrap-markers"],
+    );
+    assert_copied(&outcome, "https://ex.test");
+    let output = String::from_utf8(outcome.output).unwrap();
+    let first = frames(&output).next().unwrap();
+    assert!(first.contains("\x1b[1;1H\x1b[32mhttps://"));
+    assert!(first.contains("\x1b[2;1H\x1b[0mex.test"));
+}
+
+#[test]
+fn copying_across_a_hard_break_at_the_same_right_margin_keeps_the_newline() {
+    for separator in ["\r\n", "\n"] {
+        let text = format!("\x1b[32mhttps://{separator}\x1b[0mex.test\r");
+        let outcome = run_pager_with(
+            &text,
+            Some(b"\0\x10\x01\r"),
+            false,
+            (8, 4),
+            &["--wrap-markers"],
+        );
+        assert_copied(&outcome, "https://\nex.test");
+    }
 }
 
 #[test]
@@ -349,4 +396,15 @@ fn copying_an_empty_region_preserves_the_clipboard() {
         assert!(outcome.success && outcome.restored_terminal_mode);
         assert!(!contains(&outcome.output, b"\x1b]52;"));
     }
+
+    // The end of one row and the start of its continuation have no text between them.
+    let boundary = run_pager_with(
+        "abcdefgh\rij",
+        Some(b"\x1b<\x05\0\x06\r"),
+        false,
+        (8, 4),
+        &["--wrap-markers"],
+    );
+    assert!(boundary.success && boundary.restored_terminal_mode);
+    assert!(!contains(&boundary.output, b"\x1b]52;"));
 }

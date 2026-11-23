@@ -1,4 +1,4 @@
-use super::{Line, Pager};
+use super::{Pager, ScrollbackRow};
 use crate::selection::Vec2;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use regex::RegexBuilder;
@@ -54,7 +54,7 @@ impl Search {
         }
     }
 
-    fn update_matches(&mut self, lines: &[Line], smart_case: bool) {
+    fn update_matches(&mut self, lines: &[ScrollbackRow], smart_case: bool) {
         self.results.clear();
         self.current_result_index = None;
         if self.query.is_empty() {
@@ -70,8 +70,8 @@ impl Search {
             return;
         };
 
-        for (line_index, line) in lines.iter().enumerate() {
-            let text = line.display();
+        for (line_index, row) in lines.iter().enumerate() {
+            let text = row.text.display();
             let mut byte = 0;
             let mut column = 0;
             for mat in regex.find_iter(text) {
