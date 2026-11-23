@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Parser, builder::TypedValueParser};
 use crossterm::style::Color;
 use std::fmt;
 
@@ -76,14 +76,21 @@ impl Settings {
 }
 
 #[derive(Parser, Debug)]
+#[command(
+    about = "Search and copy kitty scrollback with Emacs-style keys",
+    after_help = "Colors accept names, #RRGGBB, rgb:R,G,B, and ansi:0 through ansi:255."
+)]
 pub struct Args {
-    #[arg(long,  default_value_t = PROMPT_CURSOR_OFFSET)]
+    /// Initial offset from the final character (1 places the cursor after it).
+    #[arg(long, default_value_t = PROMPT_CURSOR_OFFSET)]
     pub prompt_cursor_offset: usize,
 
+    /// Rows to keep above and below the cursor when space permits.
     #[arg(long, default_value_t = SCROLLOFF)]
     pub scrolloff: usize,
 
-    #[arg(long, default_value_t = TAB_WIDTH)]
+    /// Tab stop interval in terminal cells. Use 0 to remove tabs.
+    #[arg(long, value_parser = clap::value_parser!(u16).map(usize::from), default_value_t = TAB_WIDTH)]
     pub tab_width: usize,
 
     #[arg(long, value_parser = parse_color, default_value_t = ColorArg(STATUS_LINE_BG_COLOR))]
@@ -107,9 +114,11 @@ pub struct Args {
     #[arg(long, value_parser = parse_color, default_value_t = ColorArg(SEARCH_HIGHLIGHT_FG_COLOR))]
     pub search_highlight_fg_color: ColorArg,
 
+    /// Wait for Enter or a search repeat before finding matches.
     #[arg(long, default_value_t = false)]
     pub disable_real_time_search: bool,
 
+    /// Make searches case-sensitive by default.
     #[arg(long, default_value_t = false)]
     pub disable_smartcase_search: bool,
 }
@@ -140,7 +149,7 @@ fn parse_color(s: &str) -> Result<ColorArg, String> {
             Ok(ColorArg(Color::AnsiValue(n)))
         }
         // RGB hex: "#ff0080" or "rgb:255,0,128"
-        s if s.starts_with('#') && s.len() == 7 => {
+        s if s.starts_with('#') && s.len() == 7 && s.is_ascii() => {
             let r = u8::from_str_radix(&s[1..3], 16)
                 .map_err(|_| format!("Invalid hex color: '{s}'"))?;
             let g = u8::from_str_radix(&s[3..5], 16)
@@ -200,5 +209,15 @@ impl fmt::Display for ColorArg {
 impl From<ColorArg> for Color {
     fn from(c: ColorArg) -> Self {
         c.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_ascii_hex_color_is_an_argument_error() {
+        assert!(Args::try_parse_from(["pager", "--selection-bg-color", "#aéabc"]).is_err());
     }
 }

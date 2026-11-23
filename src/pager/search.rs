@@ -1,26 +1,26 @@
-use super::Pager;
+use super::{Line, Pager};
+use crate::selection::Vec2;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use regex::Regex;
-use std::io::{self};
-use unicode_width::UnicodeWidthStr;
+use regex::RegexBuilder;
+use std::io;
+use std::ops::Range;
 
 pub(crate) struct SearchResult {
     pub line_index: usize,
-    pub column_index: usize,
+    /// Half-open character range, in the same units as the cursor and selection.
+    pub columns: Range<usize>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SearchDirection {
     Forward,
     Backward,
 }
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Eq)]
 pub(crate) enum SearchState {
     Typing,
-    PendingRedraw,
-    Highlighted,
-    Hidden,
+    Submitted,
 }
 
 pub(crate) struct Search {
@@ -28,399 +28,190 @@ pub(crate) struct Search {
     pub direction: SearchDirection,
     pub state: SearchState,
     pub results: Vec<SearchResult>,
-    pub error: Option<String>,
-    pub current_result_index: usize,
-    pub long_search: bool,
-    pub last_match_pos: Option<(usize, usize)>, // (column, line) - tracks last jumped-to match
+    pub current_result_index: Option<usize>,
+    pub error: Option<&'static str>,
+    origin: Vec2<usize>,
+    origin_viewport: usize,
+    origin_wish_x: usize,
+    /// An explicit repeat moves the starting point for further edits to that match.
+    repeat_anchor: Option<Vec2<usize>>,
 }
 
 impl Search {
-    pub fn new(state: SearchState, direction: SearchDirection) -> Self {
-        Search {
+    fn new(pager: &Pager, direction: SearchDirection) -> Self {
+        let origin = Vec2::new(pager.cursor_x, pager.logical_y);
+        Self {
             query: String::new(),
             direction,
-            state,
+            state: SearchState::Typing,
             results: Vec::new(),
+            current_result_index: None,
             error: None,
-            current_result_index: 0,
-            long_search: false,
-            last_match_pos: None,
-        }
-    }
-    pub fn new_with_err(msg: &str, direction: SearchDirection) -> Self {
-        Search {
-            query: String::new(),
-            direction,
-            state: SearchState::Hidden,
-            results: Vec::new(),
-            error: Some(msg.to_string()),
-            current_result_index: 0,
-            long_search: false,
-            last_match_pos: None,
+            repeat_anchor: None,
+            origin,
+            origin_viewport: pager.viewport_start,
+            origin_wish_x: pager.wish_cursor_x,
         }
     }
 
-    pub fn set_error(&mut self, msg: &str) {
+    fn update_matches(&mut self, lines: &[Line], smart_case: bool) {
         self.results.clear();
-        self.state = SearchState::Hidden;
-        self.error = Some(msg.to_string());
+        self.current_result_index = None;
+        if self.query.is_empty() {
+            self.error = Some("Error: empty search query");
+            return;
+        }
+
+        let regex = RegexBuilder::new(&self.query)
+            .case_insensitive(smart_case && !self.query.chars().any(char::is_uppercase))
+            .build();
+        let Ok(regex) = regex else {
+            self.error = Some("Error: invalid regex pattern");
+            return;
+        };
+
+        for (line_index, line) in lines.iter().enumerate() {
+            let text = line.display();
+            let mut byte = 0;
+            let mut column = 0;
+            for mat in regex.find_iter(text) {
+                let start = column + text[byte..mat.start()].chars().count();
+                column = start + mat.as_str().chars().count();
+                byte = mat.end();
+                self.results.push(SearchResult {
+                    line_index,
+                    columns: start..column,
+                });
+            }
+        }
+        self.error = self
+            .results
+            .is_empty()
+            .then_some("Error: could not find any occurrences");
+        let include_cursor =
+            self.direction == SearchDirection::Forward || self.repeat_anchor.is_some();
+        self.current_result_index = self.index_from(self.anchor(), include_cursor);
+    }
+
+    fn anchor(&self) -> &Vec2<usize> {
+        self.repeat_anchor.as_ref().unwrap_or(&self.origin)
+    }
+
+    /// Results are ordered by line and column. Repeats step past point and wrap.
+    fn index_from(&self, cursor: &Vec2<usize>, include_cursor: bool) -> Option<usize> {
+        let len = self.results.len();
+        if len == 0 {
+            return None;
+        }
+        let point = (cursor.y, cursor.x);
+        let after_equal = match self.direction {
+            SearchDirection::Forward => !include_cursor,
+            SearchDirection::Backward => include_cursor,
+        };
+        let index = self.results.partition_point(|m| {
+            let start = (m.line_index, m.columns.start);
+            start < point || (after_equal && start == point)
+        });
+        Some(match self.direction {
+            SearchDirection::Forward => index % len,
+            SearchDirection::Backward => index.checked_sub(1).unwrap_or(len - 1),
+        })
+    }
+
+    fn position(&self) -> Vec2<usize> {
+        self.current_result_index.map_or_else(
+            || self.anchor().clone(),
+            |i| {
+                let result = &self.results[i];
+                Vec2::new(result.columns.start, result.line_index)
+            },
+        )
     }
 }
 
 impl Pager {
-    /// Builds regex pattern with smartcase support.
-    /// If settings.smartcase_search is enabled and query has no uppercase chars,
-    /// prepends (?i) for case-insensitive matching.
-    fn build_search_pattern(query: &str, smart_case: bool) -> String {
-        if smart_case && !query.chars().any(|c| c.is_uppercase()) {
-            format!("(?i){}", query)
-        } else {
-            query.to_string()
-        }
-    }
-
     pub(crate) fn begin_or_repeat_search(&mut self, direction: SearchDirection) -> io::Result<()> {
-        let can_repeat = self.search.as_ref().is_some_and(|search| {
-            matches!(
-                search.state,
-                SearchState::PendingRedraw | SearchState::Highlighted
-            ) && search.error.is_none()
-                && !search.results.is_empty()
-        });
-
-        if can_repeat {
-            if let Some(search) = &mut self.search {
-                search.direction = direction;
-            }
-            return match direction {
-                SearchDirection::Forward => self.move_to_next_match(),
-                SearchDirection::Backward => self.move_to_prev_match(),
-            };
+        if self.search.as_ref().is_some_and(|s| !s.results.is_empty()) {
+            return self.repeat_search(direction);
         }
-
-        self.search = Some(Search::new(SearchState::Typing, direction));
+        self.search = Some(Search::new(self, direction));
         self.draw_status_line()
     }
 
-    pub(crate) fn search_mode(&mut self, event: KeyEvent) -> io::Result<Option<SearchDirection>> {
-        let get_lines = |query_width: usize, term_width: usize, long_search: bool| -> usize {
-            if long_search {
-                (query_width as f64 / term_width.saturating_sub(1) as f64).ceil() as usize
-            } else {
-                1
-            }
-        };
-
-        let before_lines = if let Some(search) = &self.search
-            && !self.settings.real_time_search
-        {
-            get_lines(search.query.width(), self.term_width, search.long_search)
-        } else {
-            1
-        };
-
+    fn repeat_search(&mut self, direction: SearchDirection) -> io::Result<()> {
         let Some(search) = &mut self.search else {
-            return Ok(None);
+            return Ok(());
         };
+        search.direction = direction;
+        if search.results.is_empty() {
+            search.update_matches(&self.lines, self.settings.smartcase_search);
+        } else {
+            search.current_result_index =
+                search.index_from(&Vec2::new(self.cursor_x, self.logical_y), false);
+        }
+        let position = search.position();
+        if search.current_result_index.is_some() {
+            search.repeat_anchor = Some(position.clone());
+        }
+        self.set_cursor(position.x, position.y);
+        self.draw()
+    }
 
+    pub(crate) fn search_mode(&mut self, event: KeyEvent) -> io::Result<()> {
+        let Some(search) = &mut self.search else {
+            return Ok(());
+        };
         let control = event.modifiers == KeyModifiers::CONTROL;
+        if event.code == KeyCode::Esc
+            || (control && matches!(event.code, KeyCode::Char('g' | 'c' | '[')))
+        {
+            let origin = search.origin.clone();
+            let viewport = search.origin_viewport;
+            let wish_x = search.origin_wish_x;
+            self.search = None;
+            self.set_cursor(origin.x, origin.y);
+            self.viewport_start = viewport;
+            self.wish_cursor_x = wish_x;
+            return self.draw();
+        }
         match event.code {
-            KeyCode::Char('s') if control => {
-                search.direction = SearchDirection::Forward;
-                return Ok(Some(SearchDirection::Forward));
-            }
-            KeyCode::Char('r') if control => {
-                search.direction = SearchDirection::Backward;
-                return Ok(Some(SearchDirection::Backward));
-            }
-            KeyCode::Char('g') | KeyCode::Char('c') if control => {
-                search.state = SearchState::Hidden;
-                self.draw()?;
-                return Ok(None);
-            }
-            KeyCode::Char(c)
-                if !event.modifiers.intersects(
-                    KeyModifiers::CONTROL
-                        | KeyModifiers::ALT
-                        | KeyModifiers::SUPER
-                        | KeyModifiers::HYPER
-                        | KeyModifiers::META,
-                ) =>
-            {
-                search.query.push(c);
-                if self.settings.real_time_search {
-                    self.search_realtime();
+            KeyCode::Char('s') if control => return self.repeat_search(SearchDirection::Forward),
+            KeyCode::Char('r') if control => return self.repeat_search(SearchDirection::Backward),
+            KeyCode::Enter => {
+                if search.results.is_empty() && search.error.is_none() {
+                    search.update_matches(&self.lines, self.settings.smartcase_search);
                 }
+                search.state = SearchState::Submitted;
+                let pos = search.position();
+                self.set_cursor(pos.x, pos.y);
+                return self.draw();
             }
             KeyCode::Backspace => {
                 search.query.pop();
-                if self.settings.real_time_search {
-                    self.search_realtime();
-                }
             }
-            KeyCode::Esc => {
-                search.state = SearchState::Hidden;
-                self.draw()?;
-                return Ok(None);
+            KeyCode::Char(c)
+                if (event.modifiers - KeyModifiers::SHIFT).is_empty() && !c.is_control() =>
+            {
+                search.query.push(c);
             }
-            KeyCode::Enter => return Ok(Some(search.direction)),
-            _ => {}
+            _ => return Ok(()),
         }
 
-        let after_lines = if let Some(search) = &self.search
-            && !self.settings.real_time_search
-        {
-            get_lines(search.query.width(), self.term_width, search.long_search)
+        if self.settings.real_time_search {
+            search.update_matches(&self.lines, self.settings.smartcase_search);
+            let pos = search.position();
+            self.set_cursor(pos.x, pos.y);
+            self.draw()
         } else {
-            1
-        };
-
-        let needs_full_redraw = after_lines < before_lines;
-
-        if self.settings.real_time_search || needs_full_redraw {
-            self.draw()?;
-        } else {
-            self.draw_status_line()?;
-        }
-        Ok(None)
-    }
-
-    /// Performs real-time search while typing.
-    /// Silently ignores regex errors (for incomplete patterns) and clears results instead.
-    /// Note: Keeps state as Typing to stay in search mode.
-    pub(crate) fn search_realtime(&mut self) {
-        let Some(search) = &mut self.search else {
-            return;
-        };
-
-        search.error = None;
-        if search.query.is_empty() {
+            let had_highlights = !search.results.is_empty();
             search.results.clear();
-            search.state = SearchState::Typing;
-            return;
-        }
-        let pattern = Self::build_search_pattern(&search.query, self.settings.smartcase_search);
-        match Regex::new(&pattern) {
-            Ok(regex) => {
-                search.results.clear();
-
-                for (line_index, line) in self.lines.iter().enumerate() {
-                    let display = line.display();
-                    for mat in regex.find_iter(display) {
-                        let column_index = display[..mat.start()].chars().count();
-                        search.results.push(SearchResult {
-                            line_index,
-                            column_index,
-                        });
-                    }
-                }
-                search.state = SearchState::Typing;
-            }
-            Err(_) => {
-                search.results.clear();
-                search.state = SearchState::Typing;
-            }
-        }
-    }
-
-    pub(crate) fn search(&mut self) {
-        let Some(search) = &mut self.search else {
-            return;
-        };
-
-        search.state = SearchState::Hidden;
-        if search.query.is_empty() {
-            search.set_error("Error: empty search query");
-            return;
-        }
-
-        let pattern = Self::build_search_pattern(&search.query, self.settings.smartcase_search);
-        match Regex::new(&pattern) {
-            Ok(regex) => {
-                search.results.clear();
-
-                for (line_index, line) in self.lines.iter().enumerate() {
-                    let display = line.display();
-                    for mat in regex.find_iter(display) {
-                        let column_index = display[..mat.start()].chars().count();
-                        search.results.push(SearchResult {
-                            line_index,
-                            column_index,
-                        });
-                    }
-                }
-                if search.results.is_empty() {
-                    search.results.clear();
-                    search.state = SearchState::Hidden;
-                    search.error = Some("Error: could not find any occurrences".to_string());
-                    return;
-                }
-            }
-            Err(_) => {
-                search.set_error("Error: invalid regex pattern");
-                return;
-            }
-        }
-        search.state = SearchState::PendingRedraw;
-    }
-
-    pub(crate) fn move_to_next_match(&mut self) -> io::Result<()> {
-        let next = if let Some(search) = &self.search {
-            if search.error.is_some() || search.results.is_empty() {
-                None
+            search.current_result_index = None;
+            search.error = None;
+            if had_highlights {
+                self.draw()
             } else {
-                let at_last_match = search
-                    .last_match_pos
-                    .is_some_and(|(col, line)| col == self.cursor_x && line == self.logical_y);
-
-                if at_last_match {
-                    let next_index = (search.current_result_index + 1) % search.results.len();
-                    Some((
-                        search.results[next_index].column_index,
-                        search.results[next_index].line_index,
-                        next_index,
-                    ))
-                } else {
-                    self.get_closest_next_match()
-                        .map(|(result, idx)| (result.column_index, result.line_index, idx))
-                }
-            }
-        } else {
-            None
-        };
-
-        match next {
-            Some((col, line, idx)) => {
-                if let Some(search) = &mut self.search {
-                    search.current_result_index = idx;
-                    search.state = SearchState::Highlighted;
-                    search.last_match_pos = Some((col, line));
-                }
-                self.move_to(col, line)?;
-            }
-            None => {
-                self.search = Some(Search::new_with_err(
-                    "Error: No search query",
-                    SearchDirection::Forward,
-                ));
+                self.draw_status_line()
             }
         }
-        Ok(())
-    }
-
-    pub(crate) fn move_to_prev_match(&mut self) -> io::Result<()> {
-        let prev = if let Some(search) = &self.search {
-            if search.error.is_some() || search.results.is_empty() {
-                None
-            } else {
-                let at_last_match = search
-                    .last_match_pos
-                    .is_some_and(|(col, line)| col == self.cursor_x && line == self.logical_y);
-
-                if at_last_match {
-                    let prev_index = search
-                        .current_result_index
-                        .checked_sub(1)
-                        .unwrap_or(search.results.len() - 1);
-                    Some((
-                        search.results[prev_index].column_index,
-                        search.results[prev_index].line_index,
-                        prev_index,
-                    ))
-                } else {
-                    self.get_closest_prev_match()
-                        .map(|(result, idx)| (result.column_index, result.line_index, idx))
-                }
-            }
-        } else {
-            None
-        };
-
-        match prev {
-            Some((col, line, idx)) => {
-                if let Some(search) = &mut self.search {
-                    search.current_result_index = idx;
-                    search.state = SearchState::Highlighted;
-                    search.last_match_pos = Some((col, line));
-                }
-                self.move_to(col, line)?;
-            }
-            None => {
-                self.search = Some(Search::new_with_err(
-                    "Error: No search query",
-                    SearchDirection::Backward,
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    pub(crate) fn get_closest_next_match(&self) -> Option<(&SearchResult, usize)> {
-        if let Some(search) = &self.search {
-            if search.error.is_some() || search.results.is_empty() {
-                return None;
-            }
-            for (i, result) in search.results.iter().enumerate() {
-                if result.line_index > self.logical_y
-                    || (result.line_index == self.logical_y && result.column_index > self.cursor_x)
-                {
-                    return Some((result, i));
-                }
-            }
-            return Some((&search.results[0], 0));
-        }
-        None
-    }
-
-    pub(crate) fn get_closest_prev_match(&self) -> Option<(&SearchResult, usize)> {
-        if let Some(search) = &self.search {
-            if search.error.is_some() || search.results.is_empty() {
-                return None;
-            }
-            for (i, result) in search.results.iter().enumerate().rev() {
-                if result.line_index < self.logical_y
-                    || (result.line_index == self.logical_y && result.column_index < self.cursor_x)
-                {
-                    return Some((result, i));
-                }
-            }
-            return Some((
-                &search.results[search.results.len() - 1],
-                search.results.len() - 1,
-            ));
-        }
-        None
-    }
-
-    pub(crate) fn move_to_closest_match(&mut self, next: bool) -> io::Result<()> {
-        let closest_match = if next {
-            self.get_closest_next_match()
-        } else {
-            self.get_closest_prev_match()
-        };
-        match closest_match {
-            Some((result, idx)) => {
-                let col = result.column_index;
-                let line = result.line_index;
-                self.move_to(col, line)?;
-                if let Some(search) = &mut self.search {
-                    search.current_result_index = idx;
-                    search.state = SearchState::Highlighted;
-                    search.last_match_pos = Some((col, line));
-                }
-            }
-            None => {
-                self.search = Some(Search::new_with_err(
-                    "Error: No search query",
-                    if next {
-                        SearchDirection::Forward
-                    } else {
-                        SearchDirection::Backward
-                    },
-                ));
-                self.draw_status_line()?;
-            }
-        }
-        Ok(())
     }
 }

@@ -1,5 +1,5 @@
 use super::keybindings::{Action, action_for};
-use super::{Pager, SearchDirection, SearchState};
+use super::{Pager, SearchDirection};
 
 use crate::selection::Selection;
 use crossterm::event::KeyEvent;
@@ -16,11 +16,11 @@ impl Pager {
             Action::ForwardChar => self.move_char_forward()?,
             Action::PreviousLine => self.move_vertically_by(-1)?,
             Action::NextLine => self.move_vertically_by(1)?,
-            Action::PreviousWord => self.movement_b(false, false)?,
-            Action::NextWordEnd => self.movement_e(false, false)?,
-            Action::BeginningOfLine => self.move_horizontally_to(0)?,
-            Action::EndOfLine => self.movement_dollar()?,
-            Action::BackToIndentation => self.movement_underscore()?,
+            Action::PreviousWord => self.previous_word()?,
+            Action::NextWordEnd => self.next_word_end()?,
+            Action::BeginningOfLine => self.move_to(0, self.logical_y)?,
+            Action::EndOfLine => self.move_to(usize::MAX, self.logical_y)?,
+            Action::BackToIndentation => self.back_to_indentation()?,
             Action::BeginningOfBuffer => self.move_to(0, 0)?,
             Action::EndOfBuffer => {
                 self.move_to(usize::MAX, self.lines.len().saturating_sub(1))?;
@@ -45,9 +45,7 @@ impl Pager {
             }
             Action::ClearSelection => {
                 self.selection = None;
-                if let Some(search) = &mut self.search {
-                    search.state = SearchState::Hidden;
-                }
+                self.search = None;
                 self.draw()?;
             }
             Action::CopySelection => {

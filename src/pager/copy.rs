@@ -73,6 +73,9 @@ impl Pager {
         let Some(sel) = &self.selection else {
             return Ok(());
         };
+        if sel.start == sel.end {
+            return Ok(());
+        }
 
         let text = selected_text(&self.lines, sel);
         let mut out = stdout();

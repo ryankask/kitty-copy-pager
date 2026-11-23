@@ -33,7 +33,8 @@ pub(crate) fn action_for(event: KeyEvent) -> Option<Action> {
     let alt = modifiers == KeyModifiers::ALT;
     // With the enhanced keyboard protocol kitty reports the Shift used to
     // produce '<' and '>'. Legacy terminals report only Alt.
-    let alt_punctuation = alt || modifiers == KeyModifiers::ALT | KeyModifiers::SHIFT;
+    let alt_shift = modifiers == (KeyModifiers::ALT | KeyModifiers::SHIFT);
+    let alt_punctuation = alt || alt_shift;
 
     match event.code {
         KeyCode::Char('a') if control => Some(BeginningOfLine),
@@ -58,6 +59,8 @@ pub(crate) fn action_for(event: KeyEvent) -> Option<Action> {
         KeyCode::Char('[') if control => Some(Quit),
         KeyCode::Char('<') if alt_punctuation => Some(BeginningOfBuffer),
         KeyCode::Char('>') if alt_punctuation => Some(EndOfBuffer),
+        KeyCode::Char(',') if alt_shift => Some(BeginningOfBuffer),
+        KeyCode::Char('.') if alt_shift => Some(EndOfBuffer),
 
         KeyCode::Char('q') if modifiers.is_empty() => Some(Quit),
         KeyCode::Char(' ') if modifiers.is_empty() => Some(PageDown),
@@ -155,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_both_terminal_encodings_for_meta_angle_brackets() {
+    fn accepts_legacy_and_enhanced_encodings_for_meta_angle_brackets() {
         assert_eq!(
             action_for(key(KeyCode::Char('<'), KeyModifiers::ALT)),
             Some(Action::BeginningOfBuffer)
@@ -167,6 +170,16 @@ mod tests {
             )),
             Some(Action::EndOfBuffer)
         );
+        let shifted_meta = KeyModifiers::ALT | KeyModifiers::SHIFT;
+        assert_eq!(
+            action_for(key(KeyCode::Char(','), shifted_meta)),
+            Some(Action::BeginningOfBuffer)
+        );
+        assert_eq!(
+            action_for(key(KeyCode::Char('.'), shifted_meta)),
+            Some(Action::EndOfBuffer)
+        );
+        assert_eq!(action_for(key(KeyCode::Char(','), KeyModifiers::ALT)), None);
     }
 
     #[test]

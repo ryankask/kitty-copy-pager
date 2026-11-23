@@ -1,3 +1,28 @@
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
+
+pub(crate) fn prefix_by_width(text: &str, mut cells: usize) -> &str {
+    for (i, grapheme) in text.grapheme_indices(true) {
+        let width = grapheme.width();
+        if width > cells {
+            return &text[..i];
+        }
+        cells -= width;
+    }
+    text
+}
+
+pub(crate) fn suffix_by_width(text: &str, mut cells: usize) -> &str {
+    for (i, grapheme) in text.grapheme_indices(true).rev() {
+        let width = grapheme.width();
+        if width > cells {
+            return &text[i + grapheme.len()..];
+        }
+        cells -= width;
+    }
+    text
+}
+
 pub fn get_utf_index(line: &str, idx: usize) -> usize {
     line.char_indices()
         .nth(idx)

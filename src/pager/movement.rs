@@ -1,153 +1,86 @@
 use super::Pager;
-use std::cmp::min;
-use std::io::{self};
-
-type WrappingMotionFn = fn(&mut Pager, bool, bool) -> io::Result<()>;
+use std::io;
+use std::ops::Range;
 
 impl Pager {
-    pub(crate) fn move_to(&mut self, x: usize, y: usize) -> io::Result<()> {
-        self.logical_y = min(y, self.lines.len().saturating_sub(1));
-        let line_len = self.current_line_len();
-        self.cursor_x = min(x, line_len);
+    pub(crate) fn visible_lines(&self) -> Range<usize> {
+        let end = (self.viewport_start + self.visible_rows()).min(self.lines.len());
+        self.viewport_start..end
+    }
+
+    fn visible_rows(&self) -> usize {
+        self.term_height.saturating_sub(1).max(1)
+    }
+
+    /// Place point, extend any active region, and keep point inside the viewport.
+    /// Return whether the text area needs repainting.
+    pub(crate) fn set_cursor(&mut self, x: usize, y: usize) -> bool {
+        let previous_line = self.logical_y;
+        let previous_byte = self.line_start_byte;
+        self.logical_y = y.min(self.lines.len() - 1);
+        self.cursor_x = x.min(self.current_line_len());
         self.wish_cursor_x = self.cursor_x;
-        self.movement_suffix(true)
+        self.line_start_byte =
+            self.lines[self.logical_y].screen_start(self.cursor_x, self.term_width);
+        self.expand_selection();
+
+        let rows = self.visible_rows();
+        let margin = self.settings.scrolloff.min((rows - 1) / 2);
+        let first = (self.logical_y + margin + 1).saturating_sub(rows);
+        let last = self.logical_y.saturating_sub(margin);
+        let start = self
+            .viewport_start
+            .clamp(first, last)
+            .min(self.lines.len().saturating_sub(rows));
+        let scrolled = start != self.viewport_start;
+        self.viewport_start = start;
+        scrolled
+            || self.selection.is_some()
+            || previous_byte != self.line_start_byte
+            || (previous_line != self.logical_y && previous_byte != 0)
     }
 
-    pub(crate) fn wrap_to_next(
-        &mut self,
-        whitespace: bool,
-        already_wrapped: bool,
-        motion: WrappingMotionFn,
-    ) -> io::Result<()> {
-        let mut wrapped = false;
-        let y = self.logical_y.saturating_add(1);
-        if y <= self.lines.len().saturating_sub(1) {
-            self.logical_y = y;
-            self.cursor_x = 0;
-            wrapped = true;
+    pub(crate) fn move_to(&mut self, x: usize, y: usize) -> io::Result<()> {
+        if self.set_cursor(x, y) {
+            self.draw()
+        } else {
+            self.draw_status_line()
         }
-        self.movement_suffix(wrapped)?;
-        motion(self, whitespace, already_wrapped)
-    }
-
-    pub(crate) fn wrap_to_previous(
-        &mut self,
-        whitespace: bool,
-        already_wrapped: bool,
-        motion: WrappingMotionFn,
-    ) -> io::Result<()> {
-        let mut wrapped = false;
-        if self.logical_y > 0 {
-            self.logical_y -= 1;
-            self.cursor_x = self.current_line_len();
-            wrapped = true;
-        }
-        self.movement_suffix(wrapped)?;
-        motion(self, whitespace, already_wrapped)
     }
 
     pub(crate) fn move_vertically_by(&mut self, amount: isize) -> io::Result<()> {
-        self.logical_y = min(
-            self.logical_y.saturating_add_signed(amount),
-            self.lines.len().saturating_sub(1),
-        );
-        let line_len = self.current_line_len();
-        self.cursor_x = min(self.wish_cursor_x, line_len);
-        self.movement_suffix(true)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn move_vertically_to(&mut self, y: usize) -> io::Result<()> {
-        self.move_to(self.cursor_x, y)?;
-        let line_len = self.current_line_len();
-        self.cursor_x = min(self.wish_cursor_x, line_len);
-        self.movement_suffix(true)
-    }
-
-    pub(crate) fn move_horizontally_by(&mut self, amount: isize) -> io::Result<()> {
-        let line_len = self.current_line_len();
-        self.cursor_x = min(self.cursor_x.saturating_add_signed(amount), line_len);
-        self.wish_cursor_x = self.cursor_x;
-        self.movement_suffix(false)
+        let column = self.wish_cursor_x;
+        let result = self.move_to(column, self.logical_y.saturating_add_signed(amount));
+        self.wish_cursor_x = column;
+        result
     }
 
     pub(crate) fn move_char_backward(&mut self) -> io::Result<()> {
         if self.cursor_x > 0 {
-            return self.move_horizontally_by(-1);
+            self.move_to(self.cursor_x - 1, self.logical_y)
+        } else if self.logical_y > 0 {
+            self.move_to(usize::MAX, self.logical_y - 1)
+        } else {
+            Ok(())
         }
-        if self.logical_y > 0 {
-            self.logical_y -= 1;
-            self.cursor_x = self.current_line_len();
-            self.wish_cursor_x = self.cursor_x;
-            return self.movement_suffix(true);
-        }
-        Ok(())
     }
 
     pub(crate) fn move_char_forward(&mut self) -> io::Result<()> {
         if self.cursor_x < self.current_line_len() {
-            return self.move_horizontally_by(1);
+            self.move_to(self.cursor_x + 1, self.logical_y)
+        } else if self.logical_y + 1 < self.lines.len() {
+            self.move_to(0, self.logical_y + 1)
+        } else {
+            Ok(())
         }
-        if self.logical_y < self.lines.len().saturating_sub(1) {
-            self.logical_y += 1;
-            self.cursor_x = 0;
-            self.wish_cursor_x = 0;
-            return self.movement_suffix(true);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn move_horizontally_to(&mut self, x: usize) -> io::Result<()> {
-        self.move_to(x, self.logical_y)?;
-        self.wish_cursor_x = self.cursor_x;
-        self.movement_suffix(false)
-    }
-
-    pub(crate) fn move_viewport(&mut self) -> bool {
-        let upper_bound = self.logical_y.saturating_add(self.settings.scrolloff);
-        if upper_bound > self.viewport_end {
-            let mut movement = self.viewport_end;
-            self.viewport_end = min(
-                self.logical_y.saturating_add(self.settings.scrolloff),
-                self.lines.len().saturating_sub(1),
-            );
-            movement = self.viewport_end - movement;
-            self.viewport_start = self.viewport_start.saturating_add(movement);
-            return true;
-        }
-        if self.logical_y.saturating_sub(self.settings.scrolloff) < self.viewport_start {
-            let mut movement = self.viewport_start;
-            self.viewport_start = self.logical_y.saturating_sub(self.settings.scrolloff);
-            movement -= self.viewport_start;
-            self.viewport_end = self.viewport_end.saturating_sub(movement);
-            return true;
-        }
-        false
     }
 
     pub(crate) fn recenter(&mut self) -> io::Result<()> {
-        let visible_rows = self.term_height.saturating_sub(1).max(1);
-        let max_start = self.lines.len().saturating_sub(visible_rows);
+        let rows = self.visible_rows();
         self.viewport_start = self
             .logical_y
-            .saturating_sub(visible_rows / 2)
-            .min(max_start);
-        self.viewport_end = self
-            .viewport_start
-            .saturating_add(visible_rows - 1)
-            .min(self.lines.len().saturating_sub(1));
+            .saturating_sub(rows / 2)
+            .min(self.lines.len().saturating_sub(rows));
         self.draw()
-    }
-
-    pub(crate) fn movement_suffix(&mut self, rerender: bool) -> io::Result<()> {
-        let viewport_moved = self.move_viewport();
-        if (rerender && viewport_moved) || self.selection.is_some() {
-            self.expand_selection();
-            self.draw()
-        } else {
-            self.draw_status_line()?;
-            self.draw_search(true)?;
-            self.draw_cursor()
-        }
     }
 }

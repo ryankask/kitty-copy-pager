@@ -81,7 +81,6 @@ fn main() -> io::Result<()> {
     let _terminal = TerminalSession::enter()?;
 
     sb.draw()?;
-    sb.draw_status_line()?;
 
     loop {
         if poll(Duration::from_millis(INPUT_POLLING_RATE))? {

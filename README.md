@@ -60,7 +60,9 @@ macos_option_as_alt yes
 | `M-w`, `C-w`, or `Enter` | Copy the selection and exit |
 | `C-k` | Copy from the cursor to the end of the line and exit |
 
-Copied text is sent to the system clipboard using OSC 52.
+The pager sends plain text to the system clipboard using OSC 52. ANSI text styles
+appear on screen, and tabs expand to the next tab stop in both the display and the
+copied text. Copying an empty region leaves the clipboard intact.
 
 ### Search
 
@@ -71,8 +73,12 @@ Copied text is sent to the system clipboard using OSC 52.
 | `Enter` | Finish entering the search |
 | `C-g`, `C-c`, or `Escape` | Cancel search input |
 
-Searches use regular expressions, update while you type, and use smart case by
-default.
+Searches use regular expressions. By default, the cursor moves to a match as you
+type. Lowercase queries ignore case, and an uppercase letter makes the search
+case-sensitive. You can keep editing the query after repeating a search.
+Cancelling returns the cursor and selection to their positions before the
+search. After accepting a query, press `C-g` to clear it and start a different
+search with `C-s` or `C-r`.
 
 ### Exit
 
@@ -83,5 +89,6 @@ Press `q`, `C-c`, `C-[`, or `Escape` outside search input.
 Run `kitty-copy-pager --help` for display, color, tab width, and search options.
 
 > [!WARNING]
-> Resizing while the pager is open is not supported. The pager renders the raw
-> scrollback at the terminal size kitty used to produce it.
+> Resizing while the pager is open is not supported. The pager uses the terminal
+> dimensions at startup. When a line exceeds that width, moving the cursor along
+> it reveals the rest of the line.
