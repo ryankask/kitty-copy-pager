@@ -35,18 +35,23 @@ impl Pager {
             }
             Action::Recenter => self.recenter()?,
             Action::BeginSelection => {
-                self.selection = Some(Selection::with_coords(
+                let previous = self.selection.replace(Selection::with_coords(
                     self.cursor_x,
                     self.logical_y,
                     self.cursor_x,
                     self.logical_y,
                 ));
-                self.draw()?;
+                if let Some(old) = previous {
+                    self.draw_rows(old.start.y..old.end.y + 1)?;
+                }
             }
             Action::ClearSelection => {
-                self.selection = None;
-                self.search = None;
-                self.draw()?;
+                let previous = self.selection.take();
+                if self.search.take().is_some() {
+                    self.draw()?;
+                } else if let Some(old) = previous {
+                    self.draw_rows(old.start.y..old.end.y + 1)?;
+                }
             }
             Action::CopySelection => {
                 if self.selection.is_some() {

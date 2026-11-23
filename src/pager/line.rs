@@ -104,15 +104,14 @@ impl Line {
         let visible = prefix_by_width(&self.display()[start..], width);
         match self {
             Self::Clean(_) => Cow::Borrowed(visible),
-            Self::Ansi { raw, .. } => {
-                let mut row = StyledRow {
-                    text: String::with_capacity(visible.len()),
-                    skip: start,
-                    remaining: visible.len(),
-                };
-                Parser::new().advance(&mut row, raw.as_bytes());
-                Cow::Owned(row.text)
-            }
+            Self::Ansi { raw, .. } => Cow::Owned(StyledRow::render(raw, start, visible.len())),
+        }
+    }
+
+    pub(super) fn style_changes(&self) -> String {
+        match self {
+            Self::Clean(_) => String::new(),
+            Self::Ansi { raw, .. } => StyledRow::render(raw, 0, 0),
         }
     }
 }
@@ -144,6 +143,18 @@ struct StyledRow {
     text: String,
     skip: usize,
     remaining: usize,
+}
+
+impl StyledRow {
+    fn render(raw: &str, skip: usize, remaining: usize) -> String {
+        let mut row = Self {
+            text: String::with_capacity(remaining),
+            skip,
+            remaining,
+        };
+        Parser::new().advance(&mut row, raw.as_bytes());
+        row.text
+    }
 }
 
 impl Perform for StyledRow {

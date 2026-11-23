@@ -13,8 +13,8 @@ impl Pager {
     }
 
     /// Place point, extend any active region, and keep point inside the viewport.
-    /// Return whether the text area needs repainting.
-    pub(crate) fn set_cursor(&mut self, x: usize, y: usize) -> bool {
+    /// Return the scrollback rows whose contents or highlighting changed.
+    pub(crate) fn set_cursor(&mut self, x: usize, y: usize) -> Range<usize> {
         let previous_line = self.logical_y;
         let previous_byte = self.line_start_byte;
         self.logical_y = y.min(self.lines.len() - 1);
@@ -34,18 +34,21 @@ impl Pager {
             .min(self.lines.len().saturating_sub(rows));
         let scrolled = start != self.viewport_start;
         self.viewport_start = start;
-        scrolled
-            || self.selection.is_some()
+        if scrolled {
+            self.visible_lines()
+        } else if self.selection.is_some()
             || previous_byte != self.line_start_byte
             || (previous_line != self.logical_y && previous_byte != 0)
+        {
+            previous_line.min(self.logical_y)..previous_line.max(self.logical_y) + 1
+        } else {
+            0..0
+        }
     }
 
     pub(crate) fn move_to(&mut self, x: usize, y: usize) -> io::Result<()> {
-        if self.set_cursor(x, y) {
-            self.draw()
-        } else {
-            self.draw_status_line()
-        }
+        let rows = self.set_cursor(x, y);
+        self.draw_rows(rows)
     }
 
     pub(crate) fn move_vertically_by(&mut self, amount: isize) -> io::Result<()> {

@@ -120,6 +120,14 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
+fn frames(output: &str) -> impl Iterator<Item = &str> {
+    output.split("\x1b[?2026h").skip(1).map(|part| {
+        part.split_once("\x1b[?2026l")
+            .expect("synchronized repaint must finish")
+            .0
+    })
+}
+
 fn assert_copied(outcome: &PagerOutcome, expected: &str) {
     assert!(outcome.success && outcome.restored_terminal_mode);
     let mut command = String::new();
@@ -150,6 +158,52 @@ fn quitting_restores_the_screen_and_terminal_mode() {
     assert!(contains(&outcome.output, ENTER_ALTERNATE_SCREEN));
     assert!(contains(&outcome.output, LEAVE_ALTERNATE_SCREEN));
     assert!(outcome.restored_terminal_mode);
+}
+
+#[test]
+fn moving_a_selection_leaves_other_rows_on_screen() {
+    let text = "stationary row\nab";
+    let outcome = run_pager(text, Some(b"\0\x02\r"), false);
+    assert_copied(&outcome, "b");
+    let output = String::from_utf8(outcome.output).unwrap();
+    assert_eq!(
+        output.matches("stationary row").count(),
+        1,
+        "unaffected row repainted"
+    );
+    let movement = frames(&output).last().unwrap();
+    assert!(!movement.contains("\x1b[2J"));
+    assert!(movement.contains("\x1b[2;2Hb"));
+}
+
+#[test]
+fn shrinking_a_selection_restores_line_styles_search_matches_and_the_newline_cell() {
+    let text = "\x1b[31mstationary\nab\nxy\x1b[0m\nfooter";
+    let outcome = run_pager(text, Some(b"\x1b<\x13ab\r\0\x0e\x10q"), false);
+    assert!(outcome.success && outcome.restored_terminal_mode);
+    let output = String::from_utf8(outcome.output).unwrap();
+    let frame = frames(&output).last().unwrap();
+    assert!(!frame.contains("stationary") && !frame.contains("footer"));
+    assert!(frame.contains("\x1b[31m\x1b[2;1Hab\x1b[3;1Hxy")); // inherited foreground
+    assert_eq!(frame.matches("\x1b[2;1Hab").count(), 2); // base text and its search highlight
+    assert!(frame.contains("\x1b[2;3H\x1b[K")); // remove the old selected newline
+}
+
+#[test]
+fn scrolling_while_selecting_never_clears_the_display_between_frames() {
+    let outcome = run_pager_with(
+        "one\ntwo\nthree\nfour",
+        Some(b"\0\x10\x10\x0e\r"),
+        false,
+        (12, 3),
+        &[],
+    );
+    assert_copied(&outcome, "e\nfour");
+    let output = String::from_utf8(outcome.output).unwrap();
+    let (_, paints) = output.split_once("\x1b[?2026h").unwrap();
+    assert!(!paints.contains("\x1b[2J"));
+    let last = frames(&output).last().unwrap();
+    assert!(last.contains("two") && last.contains("three"));
 }
 
 #[cfg(target_os = "linux")]
@@ -200,7 +254,7 @@ fn backward_regex_search_paints_exact_ranges_and_reports_the_chosen_match() {
     let outcome = run_pager("é aaa X a Z", Some(b"\x12a+\r\x0b"), false);
     assert_copied(&outcome, "a Z");
     let output = String::from_utf8(outcome.output).unwrap();
-    let last_frame = output.rsplit("\x1b[2J").next().unwrap();
+    let last_frame = frames(&output).last().unwrap();
     assert!(last_frame.contains("\x1b[1;3Haaa\x1b"));
     assert!(last_frame.contains("\x1b[1;9Ha\x1b"));
     assert!(last_frame.contains("[2/2]"));
@@ -211,7 +265,7 @@ fn zero_width_matches_are_navigable_without_painting_a_character() {
     let outcome = run_pager("one\ntwo", Some(b"\x13^\r\x13\x0b"), false);
     assert_copied(&outcome, "two");
     let output = String::from_utf8(outcome.output).unwrap();
-    let last_frame = output.rsplit("\x1b[2J").next().unwrap();
+    let last_frame = frames(&output).last().unwrap();
     assert!(last_frame.contains("[2/2]"));
     // The base text is painted once. Neither empty match repaints its first character.
     assert_eq!(last_frame.matches("\x1b[1;1Ho").count(), 1);
@@ -225,13 +279,16 @@ fn a_short_viewport_keeps_the_line_being_copied_on_screen() {
     let outcome = run_pager_with(text, Some(keys), false, (20, 4), &["--scrolloff", "100"]);
     assert_copied(&outcome, "line 1");
     let output = String::from_utf8(outcome.output).unwrap();
-    let last_frame = output.rsplit("\x1b[2J").next().unwrap();
+    let last_frame = frames(&output)
+        .filter(|f| f.contains("line "))
+        .last()
+        .unwrap();
     assert!(last_frame.contains("\x1b[2;1Hline 1"));
 
     let one_row = run_pager_with(text, Some(keys), false, (20, 1), &[]);
     assert_copied(&one_row, "line 1");
     let output = String::from_utf8(one_row.output).unwrap();
-    let last_frame = output.rsplit("\x1b[2J").next().unwrap();
+    let last_frame = frames(&output).last().unwrap();
     assert!(last_frame.contains("\x1b[1;1Hline 1"));
     assert!(!last_frame.contains("Ln "));
 }
@@ -265,7 +322,7 @@ fn wide_lines_keep_the_search_match_visible_and_copy_the_full_suffix() {
     let outcome = run_pager_with(text, Some("\x13界\r\x0b".as_bytes()), false, (6, 4), &[]);
     assert_copied(&outcome, "界tail");
     let output = String::from_utf8(outcome.output).unwrap();
-    let last_frame = output.rsplit("\x1b[2J").next().unwrap();
+    let last_frame = frames(&output).last().unwrap();
     assert!(last_frame.contains("\x1b[35m6789界\x1b[0m"));
     assert!(last_frame.contains("\x1b[1;5H界\x1b"));
 }

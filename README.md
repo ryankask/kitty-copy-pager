@@ -1,9 +1,8 @@
 # Kitty Emacs copy mode
 
-A keyboard-driven copy mode for [kitty](https://sw.kovidgoyal.net/kitty/), using
-Emacs-style keys. Kitty passes its scrollback on standard input; the pager lets
-you move through it, search, select a region, and copy that region to the system
-clipboard.
+A tmux-style copy mode for [kitty](https://sw.kovidgoyal.net/kitty/) with Emacs
+keybindings. Kitty passes its scrollback on standard input. Use the pager to
+move through it, search, select a region, and copy it to the system clipboard.
 
 This is a fork of
 [BasileBux/kitty-copy-pager](https://github.com/BasileBux/kitty-copy-pager).
